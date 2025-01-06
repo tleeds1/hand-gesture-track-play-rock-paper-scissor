@@ -2,6 +2,8 @@
 # -*- coding: utf-8 -*-
 import csv
 import copy
+import time
+import random
 import argparse
 import itertools
 from collections import Counter
@@ -14,7 +16,6 @@ import mediapipe as mp
 from utils import CvFpsCalc
 from model import KeyPointClassifier
 from model import PointHistoryClassifier
-
 
 def get_args():
     parser = argparse.ArgumentParser()
@@ -61,7 +62,7 @@ def main():
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(
         static_image_mode=use_static_image_mode,
-        max_num_hands=1,
+        max_num_hands=2,
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
     )
@@ -69,7 +70,14 @@ def main():
     keypoint_classifier = KeyPointClassifier()
 
     point_history_classifier = PointHistoryClassifier()
-
+    player_score = 0
+    computer_score = 0
+    start_time = time.time()
+    player_choice = None
+    last_use_time = False
+    round_result = None
+    computer_prev = None
+    player_prev = None
     # Read labels ###########################################################
     with open('model/keypoint_classifier/keypoint_classifier_label.csv',
               encoding='utf-8-sig') as f:
@@ -121,62 +129,150 @@ def main():
         results = hands.process(image)
         image.flags.writeable = True
 
-        #  ####################################################################
-        if results.multi_hand_landmarks is not None:
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
-                                                  results.multi_handedness):
-                # Bounding box calculation
-                brect = calc_bounding_rect(debug_image, hand_landmarks)
-                # Landmark calculation
-                landmark_list = calc_landmark_list(debug_image, hand_landmarks)
+        if (mode != 3):
+            #  ####################################################################
+            if results.multi_hand_landmarks is not None:
+                for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
+                                                      results.multi_handedness):
+                    # Bounding box calculation
+                    brect = calc_bounding_rect(debug_image, hand_landmarks)
+                    # Landmark calculation
+                    landmark_list = calc_landmark_list(debug_image, hand_landmarks)
 
-                # Conversion to relative coordinates / normalized coordinates
-                pre_processed_landmark_list = pre_process_landmark(
-                    landmark_list)
-                pre_processed_point_history_list = pre_process_point_history(
-                    debug_image, point_history)
-                # Write to the dataset file
-                logging_csv(number, mode, pre_processed_landmark_list,
+                    # Conversion to relative coordinates / normalized coordinates
+                    pre_processed_landmark_list = pre_process_landmark(
+                        landmark_list)
+                    pre_processed_point_history_list = pre_process_point_history(
+                        debug_image, point_history)
+                    # Write to the dataset file
+                    logging_csv(number, mode, pre_processed_landmark_list,
+                                pre_processed_point_history_list)
+
+                    # Hand sign classification
+                    hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
+                    if hand_sign_id == 2:  # Point gesture
+                        point_history.append(landmark_list[8])
+                    else:
+                        point_history.append([0, 0])
+
+                    # Finger gesture classification
+                    finger_gesture_id = 0
+                    point_history_len = len(pre_processed_point_history_list)
+                    if point_history_len == (history_length * 2):
+                        finger_gesture_id = point_history_classifier(
                             pre_processed_point_history_list)
 
-                # Hand sign classification
-                hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
-                if hand_sign_id == 2:  # Point gesture
-                    point_history.append(landmark_list[8])
-                else:
-                    point_history.append([0, 0])
+                    # Calculates the gesture IDs in the latest detection
+                    finger_gesture_history.append(finger_gesture_id)
+                    most_common_fg_id = Counter(
+                        finger_gesture_history).most_common()
+                    # Drawing part
+                    debug_image = draw_bounding_rect(use_brect, debug_image, brect)
+                    debug_image = draw_landmarks(debug_image, landmark_list)
+                    debug_image = draw_info_text(
+                        debug_image,
+                        brect,
+                        handedness,
+                        keypoint_classifier_labels[hand_sign_id],
+                        point_history_classifier_labels[most_common_fg_id[0][0]],
+                    )
+            else:
+                point_history.append([0, 0])
 
-                # Finger gesture classification
-                finger_gesture_id = 0
-                point_history_len = len(pre_processed_point_history_list)
-                if point_history_len == (history_length * 2):
-                    finger_gesture_id = point_history_classifier(
-                        pre_processed_point_history_list)
-
-                # Calculates the gesture IDs in the latest detection
-                finger_gesture_history.append(finger_gesture_id)
-                most_common_fg_id = Counter(
-                    finger_gesture_history).most_common()
-
-                # Drawing part
-                debug_image = draw_bounding_rect(use_brect, debug_image, brect)
-                debug_image = draw_landmarks(debug_image, landmark_list)
-                debug_image = draw_info_text(
-                    debug_image,
-                    brect,
-                    handedness,
-                    keypoint_classifier_labels[hand_sign_id],
-                    point_history_classifier_labels[most_common_fg_id[0][0]],
-                )
+            debug_image = draw_point_history(debug_image, point_history)
+            debug_image = draw_info(debug_image, fps, mode, number)
+            # Screen reflection #############################################################
+            cv.imshow('Hand Gesture Recognition', debug_image)
         else:
-            point_history.append([0, 0])
+            if results.multi_hand_landmarks is not None:
+                for hand_landmarks, handedness in zip(results.multi_hand_landmarks,
+                                                      results.multi_handedness):
+                    # Bounding box calculation
+                    brect = calc_bounding_rect(debug_image, hand_landmarks)
+                    # Landmark calculation
+                    landmark_list = calc_landmark_list(debug_image, hand_landmarks)
 
-        debug_image = draw_point_history(debug_image, point_history)
-        debug_image = draw_info(debug_image, fps, mode, number)
+                    # Conversion to relative coordinates / normalized coordinates
+                    pre_processed_landmark_list = pre_process_landmark(
+                        landmark_list)
+                    pre_processed_point_history_list = pre_process_point_history(
+                        debug_image, point_history)
+                    # Write to the dataset file
+                    logging_csv(number, mode, pre_processed_landmark_list,
+                                pre_processed_point_history_list)
 
-        # Screen reflection #############################################################
-        cv.imshow('Hand Gesture Recognition', debug_image)
+                    # Hand sign classification
+                    hand_sign_id = keypoint_classifier(pre_processed_landmark_list)
+                    if hand_sign_id == 2:  # Point gesture
+                        point_history.append(landmark_list[8])
+                    else:
+                        point_history.append([0, 0])
+                    player_choice = hand_sign_id
+                    # Finger gesture classification
+                    finger_gesture_id = 0
+                    point_history_len = len(pre_processed_point_history_list)
+                    if point_history_len == (history_length * 2):
+                        finger_gesture_id = point_history_classifier(
+                            pre_processed_point_history_list)
+                    # Calculates the gesture IDs in the latest detection
+                    finger_gesture_history.append(finger_gesture_id)
+                    most_common_fg_id = Counter(
+                        finger_gesture_history).most_common()
+                    # Drawing part
+                    debug_image = draw_bounding_rect(use_brect, debug_image, brect)
+                    debug_image = draw_landmarks(debug_image, landmark_list)
+                    debug_image = draw_info_text(
+                        debug_image,
+                        brect,
+                        handedness,
+                        keypoint_classifier_labels[hand_sign_id],
+                        point_history_classifier_labels[most_common_fg_id[0][0]],
+                    )
+            else:
+                point_history.append([0, 0])
 
+            current_time = time.time()
+            time_elapsed = current_time - start_time
+            computer_move = random.choice(['Rock', 'Paper', 'Scissors'])
+            if (int(time_elapsed) % 5 == 2 and not last_use_time):
+                computer_prev = computer_move
+                player_prev = player_choice
+                print(player_choice)
+                if computer_move == 'Rock':
+                    if player_choice in [0, 4]:
+                        round_result = "Player wins"
+                        player_score += 1
+                    elif player_choice == 1:
+                        round_result = "Tie"
+                    elif player_choice == 5:
+                        round_result = "Computer wins"
+                        computer_score += 1
+                elif computer_move == 'Paper':
+                    if player_choice in [0, 4]:
+                        round_result = "Tie"
+                    elif player_choice == 1:
+                        round_result = "Computer wins"
+                        computer_score += 1
+                    elif player_choice == 5:
+                        round_result = "Player wins"
+                        player_score += 1
+                elif computer_move == 'Scissors':
+                    if player_choice in [0, 4]:
+                        round_result = "Computer wins"
+                        computer_score += 1
+                    elif player_choice == 1:
+                        round_result = "Player wins"
+                        player_score += 1
+                    elif player_choice == 5:
+                        round_result = "Tie"
+                last_use_time = True
+            elif (int(time_elapsed) % 5 != 2):
+                last_use_time = False
+            debug_image = draw_point_history(debug_image, point_history)
+            debug_image = draw_info(debug_image, fps, mode, number, player_prev, computer_prev, player_score,
+                                    computer_score, time_elapsed, last_use_time, round_result)
+            # Screen reflection #############################################################
+            cv.imshow('Hand Gesture Recognition', debug_image)
     cap.release()
     cv.destroyAllWindows()
 
@@ -191,6 +287,8 @@ def select_mode(key, mode):
         mode = 1
     if key == 104:  # h
         mode = 2
+    if key == 112:
+        mode = 3
     return number, mode
 
 
@@ -521,7 +619,8 @@ def draw_point_history(image, point_history):
     return image
 
 
-def draw_info(image, fps, mode, number):
+def draw_info(image, fps, mode, number, player_choice=None, computer_move=None, player_score=0,
+              computer_score=0, time_elapsed=None, last_use_time=None, round_result=None):
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
                1.0, (0, 0, 0), 4, cv.LINE_AA)
     cv.putText(image, "FPS:" + str(fps), (10, 30), cv.FONT_HERSHEY_SIMPLEX,
@@ -536,6 +635,36 @@ def draw_info(image, fps, mode, number):
             cv.putText(image, "NUM:" + str(number), (10, 110),
                        cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
                        cv.LINE_AA)
+    if mode == 3:
+        change_time = int(time_elapsed) % 5  # Cycle through a 5-second interval
+        cv.putText(image, "GAMING MODE", (10, 90),
+                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1,
+                   cv.LINE_AA)
+        cv.putText(image, f"Player: {player_score}  Computer: {computer_score}", (10, 120),
+                   cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv.LINE_AA)
+
+        if change_time < 2:  # First 2 seconds: Show "Ready..." message
+            i = 2 - change_time  # Countdown (2, 1)
+            cv.putText(image, f"Ready...{i}", (10, 150),
+                       cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv.LINE_AA)
+        else:
+            if player_choice:
+                player_play = None
+                if (player_choice == 0 or player_choice == 4):
+                    player_play = 'Paper'
+                elif player_choice == 1:
+                    player_play = 'Rock'
+                elif player_choice == 5:
+                    player_play = 'Scissors'
+                cv.putText(image, f"Player's Move: {player_play}", (10, 210),
+                           cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv.LINE_AA)
+            if computer_move:
+                cv.putText(image, f"Computer's Move: {computer_move}", (10, 240),
+                           cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv.LINE_AA)
+
+            if round_result:
+                cv.putText(image, f"Result: {round_result}", (10, 270),
+                           cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv.LINE_AA)
     return image
 
 
